@@ -2,6 +2,7 @@ from struct import pack, unpack
 from binascii import unhexlify
 from bencode import bencode, bdecode, decode_dict
 from time import sleep
+from hashlib import sha1
 from twisted.internet import protocol, reactor, defer
 
 
@@ -59,8 +60,10 @@ class BitTorrentClient(protocol.Protocol):
                 if r['msg_type'] == 1:
                     self._metadata[r['piece']] = msg_data[l + 1:]
 
-                    if sum(map(len, self._metadata.values())) == r['total_size']:
-                        self._deferred.callback(self._metadata)
+                    metadata = reduce(lambda r, e: r + self._metadata[e], sorted(self._metadata.keys()), "")
+
+                    if len(metadata) == r['total_size'] and sha1(metadata).digest() == self._info_hash:
+                        self._deferred.callback(metadata)
                         self.transport.loseConnection()
 
     def connectionMade(self):
@@ -113,8 +116,9 @@ def print_metadata(metadata):
     print metadata
 
 
-factory = BitTorrentFactory(unhexlify('E4DFB9BC728B5554F81CBF97637F7EA5151BF565'),
-                            unhexlify('cd2e6673b9f2a21cad1e605fe5fb745b9f7a214d'),
-                            print_metadata)
+factory = BitTorrentFactory(info_hash=unhexlify('E4DFB9BC728B5554F81CBF97637F7EA5151BF565'),
+                            peer_id=unhexlify('cd2e6673b9f2a21cad1e605fe5fb745b9f7a214d'),
+                            on_metadata_loaded=print_metadata)
+
 reactor.connectTCP("127.0.0.1", 16762, factory)
 reactor.run()
