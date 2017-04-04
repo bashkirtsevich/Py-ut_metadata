@@ -56,7 +56,7 @@ class BitTorrentClient(protocol.Protocol):
                 if r['msg_type'] == 1:
                     self._metadata[r['piece']] = msg_data[l + 1:]
 
-                    if sum(map(lambda e: len(e), self._metadata.values())) == r['total_size']:
+                    if sum(map(len, self._metadata.values())) == r['total_size']:
                         print self._metadata
                         self.transport.loseConnection()
 
