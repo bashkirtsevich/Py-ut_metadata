@@ -2,16 +2,19 @@ from struct import pack, unpack
 from binascii import unhexlify
 from bencode import bencode, bdecode, decode_dict
 from time import sleep
-from twisted.internet import protocol, reactor
+from twisted.internet import protocol, reactor, defer
 
 
 class BitTorrentClient(protocol.Protocol):
-    def __init__(self, info_hash, peer_id):
+    def __init__(self, info_hash, peer_id, on_metadata_loaded):
         self._info_hash = info_hash
         self._peer_id = peer_id
 
         self._read_handshake = True
         self._metadata = {}
+
+        self._deferred = defer.Deferred()
+        self._deferred.addCallback(on_metadata_loaded)
 
     @staticmethod
     def parseMessage(message):
@@ -57,7 +60,7 @@ class BitTorrentClient(protocol.Protocol):
                     self._metadata[r['piece']] = msg_data[l + 1:]
 
                     if sum(map(len, self._metadata.values())) == r['total_size']:
-                        print self._metadata
+                        reactor.callLater(0, self._deferred.callback, self._metadata)
                         self.transport.loseConnection()
 
     def connectionMade(self):
@@ -89,12 +92,13 @@ class BitTorrentClient(protocol.Protocol):
 class BitTorrentFactory(protocol.ClientFactory):
     protocol = BitTorrentClient
 
-    def __init__(self, info_hash, peer_id):
+    def __init__(self, info_hash, peer_id, on_metadata_loaded):
         self._info_hash = info_hash
         self._peer_id = peer_id
+        self._on_metadata_loaded = on_metadata_loaded
 
     def buildProtocol(self, addr):
-        p = self.protocol(self._info_hash, self._peer_id)
+        p = self.protocol(self._info_hash, self._peer_id, self._on_metadata_loaded)
         p.factory = self
         return p
 
@@ -105,7 +109,12 @@ class BitTorrentFactory(protocol.ClientFactory):
         reactor.stop()
 
 
+def print_metadata(metadata):
+    print metadata
+
+
 factory = BitTorrentFactory(unhexlify('E4DFB9BC728B5554F81CBF97637F7EA5151BF565'),
-                            unhexlify('cd2e6673b9f2a21cad1e605fe5fb745b9f7a214d'))
+                            unhexlify('cd2e6673b9f2a21cad1e605fe5fb745b9f7a214d'),
+                            print_metadata)
 reactor.connectTCP("127.0.0.1", 16762, factory)
 reactor.run()
