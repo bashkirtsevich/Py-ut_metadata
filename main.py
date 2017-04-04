@@ -66,7 +66,7 @@ class BitTorrentClient(protocol.Protocol):
 
                     if len(metadata) == r["total_size"]:
                         if sha1(metadata).digest() == self._info_hash:
-                            self._deferred.callback(metadata)
+                            self._deferred.callback(bdecode(metadata))
                         else:
                             self.transport.loseConnection()
 
