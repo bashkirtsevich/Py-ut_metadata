@@ -60,7 +60,7 @@ class BitTorrentClient(protocol.Protocol):
                     self._metadata[r['piece']] = msg_data[l + 1:]
 
                     if sum(map(len, self._metadata.values())) == r['total_size']:
-                        reactor.callLater(0, self._deferred.callback, self._metadata)
+                        self._deferred.callback(self._metadata)
                         self.transport.loseConnection()
 
     def connectionMade(self):
