@@ -11,6 +11,7 @@ class BitTorrentClient(protocol.Protocol):
         self._info_hash = info_hash
         self._peer_id = peer_id
 
+        self._buffer = buffer("")
         self._read_handshake = True
         self._metadata = {}
 
@@ -33,63 +34,71 @@ class BitTorrentClient(protocol.Protocol):
             if ord(msg_data[0]) == 0:
                 hs_data = bdecode(msg_data[1:])
 
-                assert "metadata_size" in hs_data and "m" in hs_data and "ut_metadata" in hs_data["m"]
+                if "metadata_size" in hs_data and "m" in hs_data and "ut_metadata" in hs_data["m"]:
+                    metadata_size = hs_data["metadata_size"]
+                    ut_metadata_id = hs_data["m"]["ut_metadata"]
 
-                metadata_size = hs_data["metadata_size"]
-                ut_metadata_id = hs_data['m']['ut_metadata']
+                    hs_response = {"e": 0,
+                                   "metadata_size": hs_data["metadata_size"],
+                                   "v": "\xce\xbcTorrent 3.4.9",
+                                   "m": {"ut_metadata": 1},
+                                   "reqq": 255}
 
-                hs_response = {'e': 0,
-                               'metadata_size': hs_data["metadata_size"],
-                               'v': '\xce\xbcTorrent 3.4.9',
-                               'm': {'ut_metadata': 1},
-                               'reqq': 255}
+                    # Response extended handshake
+                    self.sendExtendedMessage(0, hs_response)
 
-                # Response extended handshake
-                self.sendExtendedMessage(0, hs_response)
+                    sleep(0.5)
 
-                sleep(0.5)
-
-                # Request metadata
-                for i in range(0, 1 + metadata_size / (16 * 1024)):
-                    self.sendExtendedMessage(ut_metadata_id, {"msg_type": 0, "piece": i})
-                    sleep(0.05)
+                    # Request metadata
+                    for i in range(0, 1 + metadata_size / (16 * 1024)):
+                        self.sendExtendedMessage(ut_metadata_id, {"msg_type": 0, "piece": i})
+                        sleep(0.05)
+                else:
+                    self.transport.loseConnection()
 
             elif ord(msg_data[0]) == 1:
                 r, l = decode_dict(msg_data[1:], 0)
 
-                if r['msg_type'] == 1:
-                    self._metadata[r['piece']] = msg_data[l + 1:]
+                if r["msg_type"] == 1:
+                    self._metadata[r["piece"]] = msg_data[l + 1:]
 
                     metadata = reduce(lambda r, e: r + self._metadata[e], sorted(self._metadata.keys()), "")
 
-                    if len(metadata) == r['total_size'] and sha1(metadata).digest() == self._info_hash:
-                        self._deferred.callback(metadata)
-                        self.transport.loseConnection()
+                    if len(metadata) == r["total_size"]:
+                        if sha1(metadata).digest() == self._info_hash:
+                            self._deferred.callback(metadata)
+                        else:
+                            self.transport.loseConnection()
 
     def connectionMade(self):
         # Send handshake
-        bp = list('BitTorrent protocol')
-        self.transport.write(pack('B19c', 19, *bp))
-        self.transport.write(unhexlify('0000000000100005'))
+        bp = list("BitTorrent protocol")
+        self.transport.write(pack("B19c", 19, *bp))
+        self.transport.write(unhexlify("0000000000100005"))
         self.transport.write(self._info_hash)
         self.transport.write(self._peer_id)
 
     def dataReceived(self, data):
-        buf = buffer(data)
+        self._buffer = buffer(self._buffer) + buffer(data)
 
         if self._read_handshake:
-            self._read_handshake = False
+            if len(self._buffer) >= 68:
+                # Skip handshake response
+                self._buffer = self._buffer[68:]
+                self._read_handshake = False
+            else:
+                return
+        else:
+            # Read regular message
+            while self._buffer:
+                msg_len = unpack("!I", self._buffer[:4])[0]
 
-            # Skip handshake response
-            buf = buf[68:]
+                if len(self._buffer) >= msg_len + 4:
+                    self.handleMessage(*self.parseMessage(self._buffer[4: msg_len + 4]))
 
-        # Read regular message
-        while buf:
-            msg_len = unpack("!I", buf[:4])[0]
-
-            self.handleMessage(*self.parseMessage(buf[4: msg_len + 4]))
-
-            buf = buf[msg_len + 4:]
+                    self._buffer = self._buffer[msg_len + 4:]
+                else:
+                    break
 
 
 class BitTorrentFactory(protocol.ClientFactory):
