@@ -3,10 +3,11 @@ from binascii import unhexlify
 from bencode import bencode, bdecode, decode_dict
 from time import sleep
 from hashlib import sha1
-from twisted.internet import protocol, reactor, defer
+from twisted.internet import protocol, defer
+from twisted.protocols import policies
 
 
-class BitTorrentClient(protocol.Protocol):
+class BitTorrentClient(protocol.Protocol, policies.TimeoutMixin):
     def __init__(self, info_hash, peer_id, on_metadata_loaded):
         self._info_hash = info_hash
         self._peer_id = peer_id
@@ -16,12 +17,15 @@ class BitTorrentClient(protocol.Protocol):
         self._metadata = {}
 
         self._deferred = defer.Deferred()
-        self._deferred.addCallback(on_metadata_loaded)
+        self._deferred.addCallback(on_metadata_loaded, info_hash)
 
     @staticmethod
     def parseMessage(message):
         # Return message code and message data
-        return (unpack("B", message[:1])[0], message[1:])
+        if message:
+            return (unpack("B", message[:1])[0], message[1:])
+        else:
+            return None
 
     def sendExtendedMessage(self, message_id, message_data):
         buf = pack("BB", 20, message_id) + bencode(message_data)
@@ -30,6 +34,9 @@ class BitTorrentClient(protocol.Protocol):
 
     def handleMessage(self, msg_code, msg_data):
         if msg_code == 20:
+            # If he send extended message, we can extend connection time
+            self.resetTimeout()
+
             # Extended handshake
             if ord(msg_data[0]) == 0:
                 hs_data = bdecode(msg_data[1:])
@@ -67,10 +74,13 @@ class BitTorrentClient(protocol.Protocol):
                     if len(metadata) == r["total_size"]:
                         if sha1(metadata).digest() == self._info_hash:
                             self._deferred.callback(bdecode(metadata))
-                        else:
-                            self.transport.loseConnection()
+
+                        # Abort connection anyway
+                        self.transport.abortConnection()
 
     def connectionMade(self):
+        # Set connection timeout in 10 seconds (after 10 seconds idle connection will be aborted)
+        self.setTimeout(10)
         # Send handshake
         bp = list("BitTorrent protocol")
         self.transport.write(pack("B19c", 19, *bp))
@@ -94,11 +104,16 @@ class BitTorrentClient(protocol.Protocol):
                 msg_len = unpack("!I", self._buffer[:4])[0]
 
                 if len(self._buffer) >= msg_len + 4:
-                    self.handleMessage(*self.parseMessage(self._buffer[4: msg_len + 4]))
+                    message = self.parseMessage(self._buffer[4: msg_len + 4])
+                    if message:
+                        self.handleMessage(*message)
 
                     self._buffer = self._buffer[msg_len + 4:]
                 else:
                     break
+
+    def timeoutConnection(self):
+        self.transport.abortConnection()
 
 
 class BitTorrentFactory(protocol.ClientFactory):
@@ -113,12 +128,6 @@ class BitTorrentFactory(protocol.ClientFactory):
         p = self.protocol(self._info_hash, self._peer_id, self._on_metadata_loaded)
         p.factory = self
         return p
-
-    def clientConnectionFailed(self, connector, reason):
-        reactor.stop()
-
-    def clientConnectionLost(self, connector, reason):
-        reactor.stop()
 
 
 def print_metadata(metadata):
